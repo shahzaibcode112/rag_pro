@@ -1,4 +1,14 @@
+import os
+from pathlib import Path
+
 import gradio as gr
+
+# Render's disk is wiped on every deploy/restart, so build the vector DB on startup if it's missing
+if not (Path(__file__).parent / "vector_db").exists():
+    import ingest
+
+    ingest.create_embeddings(ingest.create_chunks(ingest.fetch_documents()))
+
 from answer import answer_question
 
 
@@ -43,7 +53,8 @@ def main():
             "Can I cancel my subscription?",
         ],
     )
-    demo.launch()
+    # Render provides the port via the PORT environment variable
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
 
 
 if __name__ == "__main__":
