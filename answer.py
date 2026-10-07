@@ -14,10 +14,8 @@ DB_NAME = str(Path(__file__).parent / "vector_db")
 RETRIEVAL_K = 4
 
 SYSTEM_PROMPT = """
-You are a friendly assistant representing the company Brewly Coffee.
-You are chatting with a user about Brewly Coffee.
-Use the given context to answer the question.
-If you don't know the answer from the context, say so.
+You are a friendly assistant that answers questions using the given context.
+Use the context to answer. If the answer is not in the context, say you don't know.
 Context:
 {context}
 """
@@ -31,10 +29,6 @@ embeddings = OpenAIEmbeddings(
     base_url="https://openrouter.ai/api/v1",
 )
 
-vectorstore = Chroma(persist_directory=DB_NAME, embedding_function=embeddings)
-# search_kwargs sets how many chunks are returned for each search
-retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
-
 llm = ChatOpenAI(
     temperature=0,
     model_name=MODEL,
@@ -43,27 +37,34 @@ llm = ChatOpenAI(
 )
 
 
-def fetch_context(question: str) -> list[Document]:
+def fetch_context(question: str, collection_name: str) -> list[Document]:
     """
-    Embed the question and run a similarity search against the vector store.
+    Embed the question and run a similarity search in the user's collection.
     """
-    return retriever.invoke(question)
+    vectorstore = Chroma(
+        collection_name=collection_name,
+        persist_directory=DB_NAME,
+        embedding_function=embeddings,
+    )
+    return vectorstore.similarity_search(question, k=RETRIEVAL_K)
 
 
 def combined_question(question: str, history: list[dict]) -> str:
     """
     Combine the user's earlier messages with the new question,
-    so follow-up questions like "how much is it?" still retrieve good context.
+    so follow-up questions still retrieve good context.
     """
     prior = "\n".join(m["content"] for m in history if m["role"] == "user")
     return prior + "\n" + question
 
 
-def answer_question(question: str, history: list[dict] = []) -> tuple[str, list[Document]]:
+def answer_question(
+    question: str, history: list[dict], collection_name: str
+) -> tuple[str, list[Document]]:
     """
     Answer the question with RAG; return the answer and the context documents.
     """
-    docs = fetch_context(combined_question(question, history))
+    docs = fetch_context(combined_question(question, history), collection_name)
     context = "\n\n".join(doc.page_content for doc in docs)
 
     messages = [SystemMessage(content=SYSTEM_PROMPT.format(context=context))]
@@ -72,9 +73,3 @@ def answer_question(question: str, history: list[dict] = []) -> tuple[str, list[
 
     response = llm.invoke(messages)
     return response.content, docs
-
-
-if __name__ == "__main__":
-    # Quick test from the terminal
-    answer, docs = answer_question("How much is the Sunrise Blend?")
-    print(answer)

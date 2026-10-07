@@ -1,18 +1,18 @@
 import os
-import glob
-import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 
 load_dotenv(override=True)
 
 DB_NAME = str(Path(__file__).parent / "vector_db")
-KNOWLEDGE_BASE = str(Path(__file__).parent / "knowledge-base")
+
+# Limit on uploaded text, so one upload can't burn through your API credits
+MAX_CHARS = 20000
 
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
 embeddings = OpenAIEmbeddings(
@@ -20,28 +20,6 @@ embeddings = OpenAIEmbeddings(
     api_key=openrouter_api_key,
     base_url="https://openrouter.ai/api/v1",
 )
-
-
-def fetch_documents():
-    """
-    Load every .md file from each sub-folder of the knowledge base.
-    The folder name is stored as 'doc_type' in the metadata.
-    """
-    folders = glob.glob(str(Path(KNOWLEDGE_BASE) / "*"))
-    documents = []
-    for folder in folders:
-        doc_type = os.path.basename(folder)
-        loader = DirectoryLoader(
-            folder,
-            glob="**/*.md",
-            loader_cls=TextLoader,
-            loader_kwargs={"encoding": "utf-8"},
-        )
-        for doc in loader.load():
-            doc.metadata["doc_type"] = doc_type
-            documents.append(doc)
-    print(f"Loaded {len(documents)} documents")
-    return documents
 
 
 def create_chunks(documents):
@@ -54,28 +32,37 @@ def create_chunks(documents):
     return chunks
 
 
-def create_embeddings(chunks):
+def get_vectorstore(collection_name: str) -> Chroma:
     """
-    Embed the chunks and store them in a fresh Chroma vector database.
+    Open (or create) a collection in the vector database.
     """
-    # Start clean so re-running ingestion doesn't create duplicates
-    if os.path.exists(DB_NAME):
-        shutil.rmtree(DB_NAME)
-
-    vectorstore = Chroma.from_documents(
-        documents=chunks, embedding=embeddings, persist_directory=DB_NAME
+    return Chroma(
+        collection_name=collection_name,
+        persist_directory=DB_NAME,
+        embedding_function=embeddings,
     )
 
-    collection = vectorstore._collection
-    count = collection.count()
-    sample_embedding = collection.get(limit=1, include=["embeddings"])["embeddings"][0]
-    dimensions = len(sample_embedding)
-    print(f"There are {count:,} vectors with {dimensions:,} dimensions in the vector store")
-    return vectorstore
+
+def add_text(text: str, collection_name: str) -> int:
+    """
+    Chunk and embed text uploaded by a user, and add it to their own collection.
+    Returns the number of chunks added.
+    """
+    text = text.strip()
+    if not text:
+        raise ValueError("The text is empty.")
+    if len(text) > MAX_CHARS:
+        raise ValueError(f"Text is too long ({len(text):,} characters). The limit is {MAX_CHARS:,}.")
+
+    doc = Document(page_content=text, metadata={"doc_type": "upload"})
+    chunks = create_chunks([doc])
+    get_vectorstore(collection_name).add_documents(chunks)
+    return len(chunks)
 
 
-if __name__ == "__main__":
-    documents = fetch_documents()
-    chunks = create_chunks(documents)
-    create_embeddings(chunks)
-    print("Ingestion complete")
+def delete_collection(collection_name: str):
+    """
+    Delete a user's collection.
+    """
+    if collection_name:
+        get_vectorstore(collection_name).delete_collection()
