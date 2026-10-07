@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from pypdf import PdfReader
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
@@ -12,7 +13,7 @@ load_dotenv(override=True)
 DB_NAME = str(Path(__file__).parent / "vector_db")
 
 # Limit on uploaded text, so one upload can't burn through your API credits
-MAX_CHARS = 20000
+MAX_CHARS = 100000
 
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
 embeddings = OpenAIEmbeddings(
@@ -20,6 +21,22 @@ embeddings = OpenAIEmbeddings(
     api_key=openrouter_api_key,
     base_url="https://openrouter.ai/api/v1",
 )
+
+
+def extract_pdf_text(path: str) -> str:
+    """
+    Read a PDF and return all of its text, page by page.
+    Raises ValueError if no text is found (e.g. a scanned PDF).
+    """
+    reader = PdfReader(path)
+    pages = [(page.extract_text() or "") for page in reader.pages]
+    text = "\n\n".join(p for p in pages if p.strip())
+    if not text.strip():
+        raise ValueError(
+            "No text found in this PDF. It may be a scanned document (images), which isn't supported yet."
+        )
+    print(f"Extracted {len(text):,} characters from {len(reader.pages)} pages")
+    return text
 
 
 def create_chunks(documents):

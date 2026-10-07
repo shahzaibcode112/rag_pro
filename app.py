@@ -4,11 +4,11 @@ from pathlib import Path
 
 import gradio as gr
 
-from ingest import add_text, delete_collection
+from ingest import add_text, delete_collection, extract_pdf_text
 from answer import answer_question
 
 NO_DATA_STATUS = "No data yet. Add your text below to get started."
-NO_DATA_REPLY = "Please add your data first (paste text or upload a .txt file above), then ask me questions about it."
+NO_DATA_REPLY = "Please add your data first (paste text or upload a .txt/.pdf file above), then ask me questions about it."
 
 
 def extract_text(content) -> str:
@@ -47,11 +47,13 @@ def chat(message, history, collection_name):
 
 def read_file(file) -> str:
     """
-    Read an uploaded .txt file.
+    Read an uploaded .txt or .pdf file and return its text.
     """
     if not file:
         return ""
     path = file if isinstance(file, str) else file.name
+    if Path(path).suffix.lower() == ".pdf":
+        return extract_pdf_text(path)
     return Path(path).read_text(encoding="utf-8", errors="ignore")
 
 
@@ -60,9 +62,16 @@ def add_data(text, file, collection_name):
     Add the user's pasted text and/or .txt file to their own collection.
     Returns: collection name, status message, cleared text box, cleared file.
     """
-    combined = "\n\n".join(p for p in [text or "", read_file(file)] if p.strip())
+    try:
+        file_text = read_file(file)
+    except ValueError as e:
+        return collection_name, f"⚠️ {e}", text, file
+    except Exception as e:
+        return collection_name, f"⚠️ Could not read the file: {e}", text, file
+
+    combined = "\n\n".join(p for p in [text or "", file_text] if p.strip())
     if not combined.strip():
-        return collection_name, "⚠️ Please paste some text or upload a .txt file.", text, file
+        return collection_name, "⚠️ Please paste some text or upload a .txt or .pdf file.", text, file
 
     # First upload in this session: create a private collection for this user
     target = collection_name or "user_" + uuid.uuid4().hex[:10]
@@ -94,7 +103,7 @@ def main():
 
         with gr.Accordion("Add your data", open=True):
             text_box = gr.Textbox(label="Paste your text", lines=6)
-            file_box = gr.File(label="...or upload a .txt file", file_types=[".txt"])
+            file_box = gr.File(label="...or upload a .txt or .pdf file", file_types=[".txt", ".pdf"])
             with gr.Row():
                 add_btn = gr.Button("Add data", variant="primary")
                 clear_btn = gr.Button("Clear my data")
