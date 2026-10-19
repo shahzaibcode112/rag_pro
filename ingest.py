@@ -1,26 +1,37 @@
 import os
-from pathlib import Path
 
-from pypdf import PdfReader
+import numpy as np
+import psycopg
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
+from pgvector.psycopg import register_vector
+from pypdf import PdfReader
 
 load_dotenv(override=True)
-
-DB_NAME = str(Path(__file__).parent / "vector_db")
 
 # Limit on uploaded text, so one upload can't burn through your API credits
 MAX_CHARS = 100000
 
+DATABASE_URL = os.getenv("DATABASE_URL")
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+
+# 1536 dimensions, matches vector(1536) in schema.sql
 embeddings = OpenAIEmbeddings(
-    model="text-embedding-3-large",
+    model="text-embedding-3-small",
     api_key=openrouter_api_key,
     base_url="https://openrouter.ai/api/v1",
 )
+
+
+def get_connection():
+    """
+    Open a connection to the Supabase Postgres database.
+    """
+    # prepare_threshold=None avoids problems with Supabase's connection pooler
+    conn = psycopg.connect(DATABASE_URL, autocommit=True, prepare_threshold=None)
+    register_vector(conn)
+    return conn
 
 
 def extract_pdf_text(path: str) -> str:
@@ -39,30 +50,19 @@ def extract_pdf_text(path: str) -> str:
     return text
 
 
-def create_chunks(documents):
+def create_chunks(text: str) -> list[str]:
     """
-    Split documents into small overlapping chunks.
+    Split text into small overlapping chunks.
     """
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    chunks = text_splitter.split_documents(documents)
+    chunks = text_splitter.split_text(text)
     print(f"Created {len(chunks)} chunks")
     return chunks
 
 
-def get_vectorstore(collection_name: str) -> Chroma:
+def add_text(text: str, owner_id: str, filename: str = "pasted text") -> int:
     """
-    Open (or create) a collection in the vector database.
-    """
-    return Chroma(
-        collection_name=collection_name,
-        persist_directory=DB_NAME,
-        embedding_function=embeddings,
-    )
-
-
-def add_text(text: str, collection_name: str) -> int:
-    """
-    Chunk and embed text uploaded by a user, and add it to their own collection.
+    Chunk and embed text, then store it in the database under this owner.
     Returns the number of chunks added.
     """
     text = text.strip()
@@ -71,15 +71,28 @@ def add_text(text: str, collection_name: str) -> int:
     if len(text) > MAX_CHARS:
         raise ValueError(f"Text is too long ({len(text):,} characters). The limit is {MAX_CHARS:,}.")
 
-    doc = Document(page_content=text, metadata={"doc_type": "upload"})
-    chunks = create_chunks([doc])
-    get_vectorstore(collection_name).add_documents(chunks)
+    chunks = create_chunks(text)
+    vectors = embeddings.embed_documents(chunks)
+
+    with get_connection() as conn:
+        document_id = conn.execute(
+            "insert into documents (owner_id, filename) values (%s, %s) returning id",
+            (owner_id, filename),
+        ).fetchone()[0]
+
+        with conn.cursor() as cur:
+            cur.executemany(
+                "insert into chunks (document_id, owner_id, content, embedding) values (%s, %s, %s, %s)",
+                [(document_id, owner_id, chunk, np.array(vec)) for chunk, vec in zip(chunks, vectors)],
+            )
     return len(chunks)
 
 
-def delete_collection(collection_name: str):
+def delete_data(owner_id: str):
     """
-    Delete a user's collection.
+    Delete all documents (and their chunks) belonging to this owner.
     """
-    if collection_name:
-        get_vectorstore(collection_name).delete_collection()
+    if not owner_id:
+        return
+    with get_connection() as conn:
+        conn.execute("delete from documents where owner_id = %s", (owner_id,))

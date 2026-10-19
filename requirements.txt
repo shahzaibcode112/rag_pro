@@ -1,7 +1,9 @@
 langchain-openai
-langchain-chroma
 langchain-text-splitters
 langchain-core
 python-dotenv
 gradio
 pypdf
+psycopg[binary]
+pgvector
+numpy

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from ingest import add_text, delete_collection, extract_pdf_text
+from ingest import add_text, delete_data, extract_pdf_text
 from answer import answer_question
 
 NO_DATA_STATUS = "No data yet. Add your text below to get started."
@@ -29,19 +29,19 @@ def extract_text(content) -> str:
     return str(content) if content is not None else ""
 
 
-def chat(message, history, collection_name):
+def chat(message, history, owner_id):
     """
     Called by Gradio on every user message.
-    collection_name is this visitor's private collection ("" until they add data).
+    owner_id identifies this visitor's data ("" until they add data).
     """
-    if not collection_name:
+    if not owner_id:
         return NO_DATA_REPLY
 
     question = extract_text(message)
     clean_history = [
         {"role": m["role"], "content": extract_text(m["content"])} for m in history
     ]
-    answer, _docs = answer_question(question, clean_history, collection_name)
+    answer, _docs = answer_question(question, clean_history, owner_id)
     return answer
 
 
@@ -57,40 +57,41 @@ def read_file(file) -> str:
     return Path(path).read_text(encoding="utf-8", errors="ignore")
 
 
-def add_data(text, file, collection_name):
+def add_data(text, file, owner_id):
     """
-    Add the user's pasted text and/or .txt file to their own collection.
-    Returns: collection name, status message, cleared text box, cleared file.
+    Add the user's pasted text and/or .txt file to the database under their own ID.
+    Returns: owner ID, status message, cleared text box, cleared file.
     """
     try:
         file_text = read_file(file)
     except ValueError as e:
-        return collection_name, f"⚠️ {e}", text, file
+        return owner_id, f"⚠️ {e}", text, file
     except Exception as e:
-        return collection_name, f"⚠️ Could not read the file: {e}", text, file
+        return owner_id, f"⚠️ Could not read the file: {e}", text, file
 
+    filename = Path(file if isinstance(file, str) else file.name).name if file else "pasted text"
     combined = "\n\n".join(p for p in [text or "", file_text] if p.strip())
     if not combined.strip():
-        return collection_name, "⚠️ Please paste some text or upload a .txt or .pdf file.", text, file
+        return owner_id, "⚠️ Please paste some text or upload a .txt or .pdf file.", text, file
 
-    # First upload in this session: create a private collection for this user
-    target = collection_name or "user_" + uuid.uuid4().hex[:10]
+    # First upload in this session: create a private ID for this user
+    target = owner_id or "user_" + uuid.uuid4().hex[:10]
 
     try:
-        n_chunks = add_text(combined, target)
+        n_chunks = add_text(combined, target, filename)
     except ValueError as e:
-        return collection_name, f"⚠️ {e}", text, file
+        return owner_id, f"⚠️ {e}", text, file
     except Exception as e:
-        return collection_name, f"⚠️ Something went wrong: {e}", text, file
+        return owner_id, f"⚠️ Something went wrong: {e}", text, file
 
     return target, f"✅ Added {n_chunks} chunks. You can now ask questions about your data.", "", None
 
 
-def clear_data(collection_name):
+def clear_data(owner_id):
     """
     Delete the user's data.
     """
-    delete_collection(collection_name)
+    delete_data(owner_id)
     return "", NO_DATA_STATUS
 
 
@@ -98,8 +99,8 @@ def main():
     with gr.Blocks(title="RAG Assistant") as demo:
         gr.Markdown("# RAG Assistant\nAdd your own text, then ask questions about it.")
 
-        # This visitor's private collection name (empty until they add data)
-        collection = gr.State("")
+        # This visitor's private ID (empty until they add data)
+        owner = gr.State("")
 
         with gr.Accordion("Add your data", open=True):
             text_box = gr.Textbox(label="Paste your text", lines=6)
@@ -111,12 +112,12 @@ def main():
 
         add_btn.click(
             add_data,
-            inputs=[text_box, file_box, collection],
-            outputs=[collection, status, text_box, file_box],
+            inputs=[text_box, file_box, owner],
+            outputs=[owner, status, text_box, file_box],
         )
-        clear_btn.click(clear_data, inputs=[collection], outputs=[collection, status])
+        clear_btn.click(clear_data, inputs=[owner], outputs=[owner, status])
 
-        gr.ChatInterface(fn=chat, additional_inputs=[collection])
+        gr.ChatInterface(fn=chat, additional_inputs=[owner])
 
     # Render provides the port via the PORT environment variable
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
