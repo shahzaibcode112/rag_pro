@@ -1,8 +1,10 @@
+fastapi
+uvicorn
+python-multipart
 langchain-openai
 langchain-text-splitters
 langchain-core
 python-dotenv
-gradio
 pypdf
 psycopg[binary]
 pgvector

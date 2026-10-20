@@ -34,12 +34,12 @@ def get_connection():
     return conn
 
 
-def extract_pdf_text(path: str) -> str:
+def extract_pdf_text(source) -> str:
     """
-    Read a PDF and return all of its text, page by page.
+    Read a PDF (file path or file-like object) and return all of its text, page by page.
     Raises ValueError if no text is found (e.g. a scanned PDF).
     """
-    reader = PdfReader(path)
+    reader = PdfReader(source)
     pages = [(page.extract_text() or "") for page in reader.pages]
     text = "\n\n".join(p for p in pages if p.strip())
     if not text.strip():
@@ -96,3 +96,48 @@ def delete_data(owner_id: str):
         return
     with get_connection() as conn:
         conn.execute("delete from documents where owner_id = %s", (owner_id,))
+
+
+def has_data(owner_id: str) -> bool:
+    """
+    True if this owner has at least one document.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "select 1 from documents where owner_id = %s limit 1", (owner_id,)
+        ).fetchone()
+    return row is not None
+
+
+def list_documents(owner_id: str) -> list[dict]:
+    """
+    List this owner's documents (newest first) with their chunk counts.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            select d.id, d.filename, d.created_at, count(c.id)
+            from documents d
+            left join chunks c on c.document_id = d.id
+            where d.owner_id = %s
+            group by d.id
+            order by d.created_at desc
+            """,
+            (owner_id,),
+        ).fetchall()
+    return [
+        {"id": r[0], "filename": r[1], "created_at": r[2].isoformat(), "chunks": r[3]}
+        for r in rows
+    ]
+
+
+def delete_document(owner_id: str, document_id: int) -> bool:
+    """
+    Delete one document (and its chunks), only if it belongs to this owner.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "delete from documents where id = %s and owner_id = %s returning id",
+            (document_id, owner_id),
+        ).fetchone()
+    return row is not None
