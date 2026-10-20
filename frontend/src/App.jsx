@@ -1,62 +1,52 @@
-import { useCallback, useEffect, useState } from "react";
-import { getDocuments } from "./api";
-import DataPanel from "./components/DataPanel.jsx";
-import ChatPanel from "./components/ChatPanel.jsx";
-
-const isMobile = () => window.matchMedia("(max-width: 820px)").matches;
+import { useEffect, useState } from "react";
+import { initAuth } from "./auth";
+import AuthScreen from "./components/AuthScreen.jsx";
+import ResetPassword from "./components/ResetPassword.jsx";
+import Workspace from "./Workspace.jsx";
 
 export default function App() {
-  const [view, setView] = useState("data"); // which panel shows on mobile
-  const [documents, setDocuments] = useState([]);
-
-  const refreshDocuments = useCallback(async () => {
-    try {
-      const data = await getDocuments();
-      setDocuments(data.documents);
-    } catch {
-      // keep the current list if the request fails
-    }
-  }, []);
+  const [status, setStatus] = useState("loading"); // loading | ready | error
+  const [error, setError] = useState("");
+  const [session, setSession] = useState(null);
+  // True when the user arrived from a "reset password" email link
+  const [recovery, setRecovery] = useState(() => window.location.hash.includes("type=recovery"));
 
   useEffect(() => {
-    refreshDocuments();
-  }, [refreshDocuments]);
+    let subscription;
+    let cancelled = false;
 
-  return (
-    <>
-      <header className="topbar">
-        <div className="brand">
-          <svg className="logo" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-            <path d="M6 3h8l5 5v13H6z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-            <path d="M14 3v5h5M9 13h7M9 17h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-          <span>DocChat</span>
-        </div>
-        <nav className="tabs" aria-label="Sections">
-          {[
-            ["data", "Documents"],
-            ["chat", "Chat"],
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={"tab" + (view === key ? " active" : "")}
-              onClick={() => setView(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </header>
+    (async () => {
+      try {
+        const client = await initAuth();
+        if (cancelled) return;
 
-      <main className="layout" data-view={view}>
-        <DataPanel
-          documents={documents}
-          onChanged={refreshDocuments}
-          onAdded={() => isMobile() && setView("chat")}
-        />
-        <ChatPanel hasDocs={documents.length > 0} />
-      </main>
-    </>
-  );
+        // Runs whenever the user signs in, signs out, or the token refreshes
+        const { data } = client.auth.onAuthStateChange((event, newSession) => {
+          setSession(newSession);
+          if (event === "PASSWORD_RECOVERY") setRecovery(true);
+        });
+        subscription = data.subscription;
+
+        const { data: current } = await client.auth.getSession();
+        if (cancelled) return;
+        setSession(current.session);
+        setStatus("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setError(err.message || "Could not start the app.");
+        setStatus("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  if (status === "loading") return <div className="splash">Loading…</div>;
+  if (status === "error") return <div className="splash error">{error}</div>;
+  if (session && recovery) return <ResetPassword onDone={() => setRecovery(false)} />;
+  if (!session) return <AuthScreen />;
+  return <Workspace user={session.user} />;
 }

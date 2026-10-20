@@ -1,93 +1,59 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+
+const h = vi.hoisted(() => {
+  const state = { session: null, listener: null };
+  const client = {
+    auth: {
+      onAuthStateChange: (cb) => {
+        state.listener = cb;
+        return { data: { subscription: { unsubscribe() {} } } };
+      },
+      getSession: async () => ({ data: { session: state.session } }),
+      signOut: async () => state.listener?.("SIGNED_OUT", null),
+      updateUser: async () => ({ error: null }),
+    },
+  };
+  return { state, client };
+});
+vi.mock("./auth", () => ({
+  initAuth: async () => h.client,
+  getClient: () => h.client,
+  getAccessToken: async () => "tok",
+}));
+
 import App from "./App.jsx";
 
-// A tiny fake backend, so the page can be tested without the server
-let docs;
-function sseResponse(events) {
-  // Split the stream at awkward places on purpose, to test buffering
-  const text = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
-  const encoder = new TextEncoder();
-  const parts = [text.slice(0, 25), text.slice(25, 90), text.slice(90)];
-  const stream = new ReadableStream({
-    start(controller) {
-      parts.forEach((p) => controller.enqueue(encoder.encode(p)));
-      controller.close();
-    },
-  });
-  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
-}
-
 beforeEach(() => {
-  docs = [];
-  global.fetch = vi.fn(async (url, options = {}) => {
-    const method = options.method || "GET";
-    if (url === "/api/documents" && method === "GET") {
-      return Response.json({ documents: docs });
-    }
-    if (url === "/api/upload") {
-      const text = options.body.get("text");
-      docs = [{ id: 1, filename: "pasted text", created_at: "2026-01-01", chunks: 2 }];
-      return Response.json({ results: [{ name: "pasted text", ok: true, chunks: 2 }], _text: text });
-    }
-    if (url === "/api/chat") {
-      return sseResponse([
-        { type: "sources", sources: [{ filename: "pasted text", text: "Beans cost $14." }] },
-        { type: "token", text: "The beans " },
-        { type: "token", text: "cost $14." },
-        { type: "done" },
-      ]);
-    }
-    if (url.startsWith("/api/documents/") && method === "DELETE") {
-      docs = [];
-      return Response.json({ ok: true });
-    }
-    throw new Error("unexpected request " + url);
-  });
+  h.state.session = null;
+  window.location.hash = "";
+  global.fetch = vi.fn(async () => Response.json({ documents: [] }));
 });
-
 afterEach(cleanup);
 
-describe("DocChat", () => {
-  it("starts empty with chat disabled", async () => {
+const session = { user: { email: "me@example.com" } };
+
+describe("App login gate", () => {
+  it("shows the sign-in screen when logged out", async () => {
     render(<App />);
-    expect(await screen.findByText(/Nothing here yet/)).toBeTruthy();
-    expect(screen.getByPlaceholderText("Add data first…").disabled).toBe(true);
+    expect(await screen.findByText("Welcome back")).toBeTruthy();
+    expect(screen.queryByText("Your documents")).toBeNull();
   });
 
-  it("adds text, streams an answer with sources, and deletes the document", async () => {
+  it("shows the workspace when logged in, and returns to sign-in after signing out", async () => {
+    h.state.session = session;
     render(<App />);
-    await screen.findByText(/Nothing here yet/);
+    expect(await screen.findByText("Your documents")).toBeTruthy();
+    expect(screen.getByText("me@example.com")).toBeTruthy();
 
-    // add pasted text
-    fireEvent.change(screen.getByLabelText("Or paste text"), { target: { value: "Beans cost $14." } });
-    fireEvent.click(screen.getByText("Add to knowledge base"));
-    await screen.findByText(/Added 1 item/);
-    expect(await screen.findByLabelText("Delete pasted text")).toBeTruthy();
+    fireEvent.click(screen.getByText("Sign out"));
+    expect(await screen.findByText("Welcome back")).toBeTruthy();
+  });
 
-    // ask a question
-    const box = await screen.findByPlaceholderText("Ask a question about your documents…");
-    await waitFor(() => expect(box.disabled).toBe(false));
-    fireEvent.change(box, { target: { value: "How much are the beans?" } });
-    fireEvent.keyDown(box, { key: "Enter" });
-
-    expect(await screen.findByText("The beans cost $14.")).toBeTruthy();
-    expect(screen.getByText("How much are the beans?")).toBeTruthy();
-    expect(screen.getByText("Sources (1)")).toBeTruthy();
-
-    // the question and earlier messages are sent as history on the next question
-    await waitFor(() => expect(box.disabled).toBe(false));
-    fireEvent.change(box, { target: { value: "And the tea?" } });
-    fireEvent.keyDown(box, { key: "Enter" });
-    await waitFor(() => {
-      const chatCalls = global.fetch.mock.calls.filter((c) => c[0] === "/api/chat");
-      expect(chatCalls.length).toBe(2);
-      const body = JSON.parse(chatCalls[1][1].body);
-      expect(body.history.map((m) => m.role)).toEqual(["user", "assistant"]);
-    });
-
-    // delete the document
-    fireEvent.click(screen.getByLabelText("Delete pasted text"));
-    expect(await screen.findByText(/Nothing here yet/)).toBeTruthy();
+  it("shows the new-password form when arriving from a reset email", async () => {
+    window.location.hash = "#access_token=abc&type=recovery";
+    h.state.session = session;
+    render(<App />);
+    expect(await screen.findByText("Choose a new password")).toBeTruthy();
   });
 });

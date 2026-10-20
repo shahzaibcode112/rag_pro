@@ -2,11 +2,10 @@ import io
 import json
 import logging
 import os
-import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,6 +19,7 @@ from ingest import (
     list_documents,
 )
 from answer import stream_answer
+from auth import get_owner_id, supabase_config
 
 logger = logging.getLogger("rag")
 
@@ -28,36 +28,18 @@ ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB per file
 MAX_DOCS_PER_OWNER = 20  # protects your API credits
 MAX_HISTORY_MESSAGES = 10
-COOKIE_NAME = "owner_id"
 
 app = FastAPI(title="DocChat")
 
 
-# ---------- Visitor identity (anonymous, cookie-based) ----------
+# ---------- Public settings for the login form ----------
 
-@app.middleware("http")
-async def owner_cookie(request: Request, call_next):
+@app.get("/api/config")
+def get_config():
     """
-    Give every visitor a random private ID, stored in a cookie.
-    All of their data is tagged with this ID.
+    Public Supabase settings (URL + anon key) so the browser can create the login client.
     """
-    owner_id = request.cookies.get(COOKIE_NAME)
-    is_new = not owner_id or len(owner_id) > 64
-    if is_new:
-        owner_id = "user_" + uuid.uuid4().hex
-    request.state.owner_id = owner_id
-
-    response = await call_next(request)
-    if is_new:
-        response.set_cookie(
-            COOKIE_NAME,
-            owner_id,
-            max_age=60 * 60 * 24 * 365,
-            httponly=True,
-            samesite="lax",
-            secure=request.headers.get("x-forwarded-proto") == "https",
-        )
-    return response
+    return supabase_config()
 
 
 # ---------- Helpers ----------
@@ -95,13 +77,13 @@ def sse(event: dict) -> str:
 # ---------- API ----------
 
 @app.get("/api/documents")
-def get_documents(request: Request):
-    return {"documents": list_documents(request.state.owner_id)}
+def get_documents(owner_id: str = Depends(get_owner_id)):
+    return {"documents": list_documents(owner_id)}
 
 
 @app.post("/api/upload")
 def upload(
-    request: Request,
+    owner_id: str = Depends(get_owner_id),
     text: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ):
@@ -109,7 +91,6 @@ def upload(
     Add pasted text and/or several files. Each one becomes its own document.
     Returns a result per item so the page can show what worked.
     """
-    owner_id = request.state.owner_id
     doc_count = len(list_documents(owner_id))
 
     items = []  # (name, function that returns the text)
@@ -139,15 +120,15 @@ def upload(
 
 
 @app.delete("/api/documents/{document_id}")
-def remove_document(document_id: int, request: Request):
-    if not delete_document(request.state.owner_id, document_id):
+def remove_document(document_id: int, owner_id: str = Depends(get_owner_id)):
+    if not delete_document(owner_id, document_id):
         raise HTTPException(status_code=404, detail="Document not found.")
     return {"ok": True}
 
 
 @app.delete("/api/data")
-def remove_all_data(request: Request):
-    delete_data(request.state.owner_id)
+def remove_all_data(owner_id: str = Depends(get_owner_id)):
+    delete_data(owner_id)
     return {"ok": True}
 
 
@@ -162,11 +143,10 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest, request: Request):
+def chat(req: ChatRequest, owner_id: str = Depends(get_owner_id)):
     """
     Stream the answer back as Server-Sent Events: sources first, then tokens.
     """
-    owner_id = request.state.owner_id
     history = [
         {"role": m.role, "content": m.content[:4000]}
         for m in req.history[-MAX_HISTORY_MESSAGES:]

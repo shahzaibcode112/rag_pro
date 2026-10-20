@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 python-multipart
+httpx
 langchain-openai
 langchain-text-splitters
 langchain-core

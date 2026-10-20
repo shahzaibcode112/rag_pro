@@ -1,8 +1,29 @@
 // All communication with the FastAPI backend lives in this file.
+import { getAccessToken, getClient } from "./auth";
 
-async function request(url, options) {
-  const res = await fetch(url, options);
+async function authHeaders() {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// If the server says our login is no longer valid, sign out so the login screen shows
+async function handleUnauthorized(res) {
+  if (res.status === 401) {
+    try {
+      await getClient()?.auth.signOut();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function request(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...(options.headers || {}), ...(await authHeaders()) },
+  });
   if (!res.ok) {
+    await handleUnauthorized(res);
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Request failed.");
   }
@@ -29,11 +50,14 @@ export const deleteAllData = () => request("/api/data", { method: "DELETE" });
 export async function* streamChat(question, history) {
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ question, history }),
   });
   if (!res.ok || !res.body) {
-    throw new Error("The server returned an error. Please try again.");
+    await handleUnauthorized(res);
+    throw new Error(
+      res.status === 401 ? "Your session has expired. Please sign in again." : "The server returned an error. Please try again."
+    );
   }
 
   const reader = res.body.getReader();
