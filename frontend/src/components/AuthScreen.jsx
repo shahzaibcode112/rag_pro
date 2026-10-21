@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { getClient } from "../auth";
 import Brand from "./Brand.jsx";
+import ThemeToggle from "./ThemeToggle.jsx";
 
 // Turn Supabase's technical messages into friendlier ones
 function friendly(message = "") {
@@ -71,6 +72,7 @@ export default function AuthScreen() {
 
   return (
     <div className="auth-page">
+      <ThemeToggle className="auth-theme" />
       <div className="auth-card">
         <Brand />
         <h1>{TITLES[mode]}</h1>

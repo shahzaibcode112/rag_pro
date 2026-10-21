@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { getClient } from "../auth";
 import Brand from "./Brand.jsx";
+import ThemeToggle from "./ThemeToggle.jsx";
 
 // Shown after the user clicks the link in the "reset password" email
 export default function ResetPassword({ onDone }) {
@@ -30,6 +31,7 @@ export default function ResetPassword({ onDone }) {
 
   return (
     <div className="auth-page">
+      <ThemeToggle className="auth-theme" />
       <div className="auth-card">
         <Brand />
         <h1>Choose a new password</h1>

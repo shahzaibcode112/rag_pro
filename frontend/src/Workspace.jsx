@@ -4,6 +4,7 @@ import { getClient } from "./auth";
 import Brand from "./components/Brand.jsx";
 import DataPanel from "./components/DataPanel.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
+import ThemeToggle from "./components/ThemeToggle.jsx";
 
 const isMobile = () => window.matchMedia("(max-width: 820px)").matches;
 
@@ -47,6 +48,7 @@ export default function Workspace({ user }) {
           <span className="user-email" title={user.email}>
             {user.email}
           </span>
+          <ThemeToggle />
           <button className="btn small" type="button" onClick={() => getClient().auth.signOut()}>
             Sign out
           </button>
